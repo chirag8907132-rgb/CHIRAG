@@ -187,7 +187,7 @@ export const AudioPlayerCard: React.FC<AudioPlayerCardProps> = ({ item, onToggle
 
   return (
     <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6 shadow-2xl relative overflow-hidden">
-      <audio ref={audioRef} src={audioUrl} />
+      <audio ref={audioRef} src={audioUrl || undefined} />
 
       {/* Header Badges */}
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
