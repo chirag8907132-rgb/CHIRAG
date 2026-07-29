@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { GoogleGenAI, Modality } from '@google/genai';
 import dotenv from 'dotenv';
 
@@ -7,6 +8,8 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
+
+const CLONES_FILE_PATH = path.join(process.cwd(), 'custom_clones.json');
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -23,28 +26,128 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 // Lazy initializer for Google GenAI client
-let genAiClient: GoogleGenAI | null = null;
 function getGenAI(): GoogleGenAI {
-  if (!genAiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn('GEMINI_API_KEY is not set in environment variables.');
-    }
-    genAiClient = new GoogleGenAI({
-      apiKey: apiKey || '',
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
+  const apiKey = process.env.GEMINI_API_KEY || '';
+  if (!apiKey) {
+    console.warn('GEMINI_API_KEY is not set in process.env.');
   }
-  return genAiClient;
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
+
+// Helper function to extract audio base64 from response parts
+function extractAudioBase64(response: any): string | undefined {
+  const cand = response?.candidates?.[0] || response?.response?.candidates?.[0];
+  const parts = cand?.content?.parts || [];
+  for (const part of parts) {
+    if (part.inlineData?.data) {
+      return part.inlineData.data;
+    }
+    if (part.inline_data?.data) {
+      return part.inline_data.data;
+    }
+  }
+  return undefined;
+}
+
+// Helper function to execute Gemini API calls with exponential backoff and model fallbacks for 429 Quotas
+async function generateContentWithRetry(aiClient: GoogleGenAI, params: any, maxRetries = 2): Promise<any> {
+  const isAudio =
+    params.config?.responseModalities?.includes(Modality.AUDIO) ||
+    params.config?.responseModalities?.includes('AUDIO');
+
+  const modelsToTry = params.model
+    ? [params.model]
+    : isAudio
+    ? ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
+    : ['gemini-3.6-flash', 'gemini-3.1-pro-preview'];
+
+  let lastError: any = null;
+
+  for (const modelName of modelsToTry) {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+      try {
+        const requestParams = { ...params, model: modelName };
+        const response = await aiClient.models.generateContent(requestParams);
+
+        if (isAudio) {
+          const audioB64 = extractAudioBase64(response);
+          if (audioB64) {
+            return response;
+          } else {
+            console.warn(`Model ${modelName} returned no inline audio data. Trying fallback model...`);
+            break;
+          }
+        }
+        return response;
+      } catch (error: any) {
+        lastError = error;
+        const errMsg = error?.message || String(error);
+        const isQuotaError =
+          errMsg.includes('429') ||
+          errMsg.includes('RESOURCE_EXHAUSTED') ||
+          errMsg.includes('Quota exceeded') ||
+          errMsg.includes('rate limit');
+
+        if (isQuotaError) {
+          attempt++;
+          if (attempt < maxRetries) {
+            console.warn(`Gemini API 429 on ${modelName}, retry ${attempt}/${maxRetries} in 1.5s...`);
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          } else {
+            console.warn(`Gemini API model ${modelName} quota exhausted. Trying next fallback model...`);
+            break;
+          }
+        } else {
+          console.warn(`Error on model ${modelName}: ${errMsg}. Trying fallback...`);
+          break;
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error('All attempted Gemini models failed to generate output.');
 }
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Server-side permanent voice clones persistence endpoints
+app.get('/api/clones', (req, res) => {
+  try {
+    if (fs.existsSync(CLONES_FILE_PATH)) {
+      const data = fs.readFileSync(CLONES_FILE_PATH, 'utf-8');
+      const clones = JSON.parse(data);
+      return res.json({ success: true, clones });
+    }
+    return res.json({ success: true, clones: [] });
+  } catch (err: any) {
+    console.error('Error reading custom_clones.json:', err);
+    return res.json({ success: true, clones: [] });
+  }
+});
+
+app.post('/api/clones', (req, res) => {
+  try {
+    const { clones } = req.body;
+    if (Array.isArray(clones)) {
+      fs.writeFileSync(CLONES_FILE_PATH, JSON.stringify(clones, null, 2), 'utf-8');
+      return res.json({ success: true, count: clones.length });
+    }
+    return res.status(400).json({ error: 'Invalid clones payload' });
+  } catch (err: any) {
+    console.error('Error writing custom_clones.json:', err);
+    return res.status(500).json({ error: 'Failed to save clones to server disk' });
+  }
 });
 
 // Helper function to split long scripts into chunks (~250 words each) for TTS
@@ -312,10 +415,18 @@ app.post('/api/tts', async (req, res) => {
 
     const pauseInstruction = 'IMPORTANT VOICE PAUSE DIRECTIVE: When encountering explicit tags like [pause], [pause 0.5s], [pause 1s], [pause 2s], [breath], or [dramatic pause], insert realistic, quiet, natural breathing pauses of that exact duration in the vocal output.';
 
+    const VALID_VOICES = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
+
     if (mode === 'dialogue' && dialogueTurns && dialogueTurns.length > 0 && speakers && speakers.length >= 2) {
       // Multi-speaker dialogue mode
       const speaker1 = speakers[0];
       const speaker2 = speakers[1];
+
+      const rawVoice1 = speaker1.customVoiceClone?.baseVoice || speaker1.voiceName;
+      const rawVoice2 = speaker2.customVoiceClone?.baseVoice || speaker2.voiceName;
+
+      const voice1 = VALID_VOICES.includes(rawVoice1) ? rawVoice1 : 'Kore';
+      const voice2 = VALID_VOICES.includes(rawVoice2) ? rawVoice2 : 'Puck';
 
       const scriptText = dialogueTurns
         .map((turn: { speakerName: string; text: string }) => {
@@ -327,8 +438,7 @@ app.post('/api/tts', async (req, res) => {
       const ruleInstruction = ruleDirective ? ruleDirective + '\n' : '';
       const fullPrompt = `TTS the following multi-speaker dialogue in ${language.toUpperCase()}. ${langDirective} ${toneInstruction}\n${tuningDirective}\n${pauseInstruction}\n${ruleInstruction}\nDialogue:\n${scriptText}`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
+      const response = await generateContentWithRetry(ai, {
         contents: [{ parts: [{ text: fullPrompt }] }],
         config: {
           responseModalities: [Modality.AUDIO],
@@ -338,13 +448,13 @@ app.post('/api/tts', async (req, res) => {
                 {
                   speaker: speaker1.name,
                   voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: (speaker1.customVoiceClone?.baseVoice || speaker1.voiceName) as any },
+                    prebuiltVoiceConfig: { voiceName: voice1 as any },
                   },
                 },
                 {
                   speaker: speaker2.name,
                   voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: (speaker2.customVoiceClone?.baseVoice || speaker2.voiceName) as any },
+                    prebuiltVoiceConfig: { voiceName: voice2 as any },
                   },
                 },
               ],
@@ -353,7 +463,7 @@ app.post('/api/tts', async (req, res) => {
         },
       });
 
-      const audioBase64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      const audioBase64 = extractAudioBase64(response);
 
       if (!audioBase64) {
         throw new Error('No audio returned from Gemini TTS engine.');
@@ -366,33 +476,39 @@ app.post('/api/tts', async (req, res) => {
         mode: 'dialogue',
       });
     } else {
-      // Single speaker mode - Auto Chunking for long scripts with Pronunciation Dictionary
+      // Single speaker mode - High-capacity chunking (600 words per chunk) to minimize API quota usage
       const textToUse = mainText || text;
-      const chunks = splitTextIntoChunks(textToUse, 220); // ~220 words per chunk for best audio quality
-      console.log(`Processing ${chunks.length} audio chunk(s) for single speaker TTS...`);
+      const chunks = splitTextIntoChunks(textToUse, 600); // ~600 words per chunk to fit in 1 API call
+      console.log(`Processing ${chunks.length} audio chunk(s) for TTS...`);
+
+      const rawVoice = customVoiceClone?.baseVoice || voiceName;
+      const effectiveVoiceName = VALID_VOICES.includes(rawVoice) ? rawVoice : 'Kore';
+      const ruleInstruction = ruleDirective ? ruleDirective + '\n' : '';
 
       const audioBuffers: Buffer[] = [];
-      const ruleInstruction = ruleDirective ? ruleDirective + '\n' : '';
-      const effectiveVoiceName = customVoiceClone ? customVoiceClone.baseVoice : (voiceName as any);
 
       for (let i = 0; i < chunks.length; i++) {
         const chunkText = chunks[i];
         const promptText = `Instructions: ${langDirective} ${toneInstruction}\n${tuningDirective}\n${cloneDirective}\n${pauseInstruction}\n${ruleInstruction}\nText to speak (Part ${i + 1} of ${chunks.length}):\n${chunkText}`;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-tts-preview',
+        // Add 700ms pacing delay between chunk requests to avoid burst rate-limit spikes
+        if (i > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+        }
+
+        const response = await generateContentWithRetry(ai, {
           contents: [{ parts: [{ text: promptText }] }],
           config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: {
               voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: effectiveVoiceName },
+                prebuiltVoiceConfig: { voiceName: effectiveVoiceName as any },
               },
             },
           },
         });
 
-        const rawB64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        const rawB64 = extractAudioBase64(response);
         if (rawB64) {
           audioBuffers.push(Buffer.from(rawB64, 'base64'));
         }
@@ -416,8 +532,32 @@ app.post('/api/tts', async (req, res) => {
     }
   } catch (error: any) {
     console.error('Error generating TTS:', error);
+    const errMsg = error.message || String(error);
+    if (
+      errMsg.includes('429') ||
+      errMsg.includes('RESOURCE_EXHAUSTED') ||
+      errMsg.includes('Quota exceeded') ||
+      errMsg.includes('rate limit')
+    ) {
+      let retrySeconds = 25;
+      if (error?.details && Array.isArray(error.details)) {
+        for (const detail of error.details) {
+          if (detail?.retryDelay) {
+            const parsed = parseInt(detail.retryDelay, 10);
+            if (!isNaN(parsed) && parsed > 0) {
+              retrySeconds = parsed + 2;
+            }
+          }
+        }
+      }
+      return res.status(429).json({
+        error: `Gemini audio rate limit reached (3 requests/minute on free tier). Quota resets in ~${retrySeconds} seconds.`,
+        isQuotaExceeded: true,
+        retryAfter: retrySeconds,
+      });
+    }
     return res.status(500).json({
-      error: error.message || 'Failed to generate audio',
+      error: errMsg || 'Failed to generate audio',
       details: error.stack,
     });
   }
@@ -471,8 +611,7 @@ User Description: ${description || 'None provided'}
 
 Output a concise, 2-3 sentence acoustic description directive that can instruct a speech synthesis engine to replicate this exact speaker persona as closely as possible. Output ONLY the acoustic directive text without quotes or preamble.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateContentWithRetry(ai, {
       contents: [audioPart, { text: promptText }],
     });
 
@@ -528,8 +667,7 @@ app.post('/api/enhance-text', async (req, res) => {
       userPrompt = `Optimize this text for speech output:\n"${text}"`;
     }
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateContentWithRetry(ai, {
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,

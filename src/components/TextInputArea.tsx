@@ -12,6 +12,7 @@ interface TextInputAreaProps {
   isGenerating: boolean;
   onEnhanceScript: (action: 'enhance' | 'translate_hinglish' | 'translate_hindi' | 'add_emotions' | 'auto_pauses') => void;
   isEnhancing: boolean;
+  rateLimitSeconds?: number;
 }
 
 export const TextInputArea: React.FC<TextInputAreaProps> = ({
@@ -23,6 +24,7 @@ export const TextInputArea: React.FC<TextInputAreaProps> = ({
   isGenerating,
   onEnhanceScript,
   isEnhancing,
+  rateLimitSeconds,
 }) => {
   const [copiedSample, setCopiedSample] = useState(false);
 
@@ -241,14 +243,23 @@ export const TextInputArea: React.FC<TextInputAreaProps> = ({
 
         <button
           type="button"
-          disabled={!text.trim() || isGenerating}
+          disabled={!text.trim() || isGenerating || (rateLimitSeconds !== undefined && rateLimitSeconds > 0)}
           onClick={onGenerateAudio}
-          className="w-full sm:w-auto px-8 py-4 bg-gradient-to-r from-[#ff4e00] to-[#ec4899] rounded-xl font-bold text-white shadow-xl shadow-orange-500/20 uppercase tracking-widest text-xs sm:text-sm hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center space-x-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none"
+          className={`w-full sm:w-auto px-8 py-4 rounded-xl font-bold text-white shadow-xl uppercase tracking-widest text-xs sm:text-sm hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none ${
+            rateLimitSeconds && rateLimitSeconds > 0
+              ? 'bg-amber-600/80 border border-amber-400/50 shadow-amber-500/20'
+              : 'bg-gradient-to-r from-[#ff4e00] to-[#ec4899] shadow-orange-500/20'
+          }`}
         >
           {isGenerating ? (
             <>
               <RefreshCw className="w-5 h-5 animate-spin text-white" />
               <span>Synthesizing Audio...</span>
+            </>
+          ) : rateLimitSeconds && rateLimitSeconds > 0 ? (
+            <>
+              <Clock className="w-5 h-5 animate-pulse text-amber-200" />
+              <span>Quota Cooldown ({rateLimitSeconds}s)</span>
             </>
           ) : (
             <>

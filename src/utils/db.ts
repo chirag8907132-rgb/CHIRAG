@@ -91,22 +91,49 @@ export async function saveStoredHistory(items: any[]): Promise<void> {
 }
 
 export async function getStoredClones(): Promise<any[]> {
+  let localClones: any[] = [];
   try {
     const db = await openDB();
-    return new Promise((resolve) => {
+    localClones = await new Promise((resolve) => {
       const tx = db.transaction(CLONES_STORE, 'readonly');
       const store = tx.objectStore(CLONES_STORE);
       const req = store.getAll();
-      req.onsuccess = () => {
-        const results = req.result || [];
-        results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        resolve(results);
-      };
+      req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => resolve(getFallbackClones());
     });
   } catch (e) {
-    return getFallbackClones();
+    localClones = getFallbackClones();
   }
+
+  // Also try fetching permanent server clones
+  try {
+    const res = await fetch('/api/clones');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.clones)) {
+        const serverClones: any[] = data.clones;
+        // Merge server and local clones by ID
+        const cloneMap = new Map<string, any>();
+        for (const clone of localClones) {
+          if (clone.id) cloneMap.set(clone.id, clone);
+        }
+        for (const clone of serverClones) {
+          if (clone.id) cloneMap.set(clone.id, clone);
+        }
+        const merged = Array.from(cloneMap.values());
+        merged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        
+        // Update local DB asynchronously with merged set
+        saveStoredClonesLocal(merged);
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.warn('Server clone fetch fallback to local:', err);
+  }
+
+  localClones.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return localClones;
 }
 
 function getFallbackClones(): any[] {
@@ -118,7 +145,7 @@ function getFallbackClones(): any[] {
   }
 }
 
-export async function saveStoredClones(items: any[]): Promise<void> {
+async function saveStoredClonesLocal(items: any[]): Promise<void> {
   // 1. IndexedDB write
   try {
     const db = await openDB();
@@ -132,19 +159,34 @@ export async function saveStoredClones(items: any[]): Promise<void> {
     console.warn('IndexedDB clones write notice:', e);
   }
 
-  // 2. LocalStorage fallback with quota protection
+  // 2. LocalStorage fallback
   try {
     localStorage.setItem('bhasha_custom_voice_clones_v1', JSON.stringify(items));
   } catch (quotaErr) {
     try {
-      // Strip sampleAudioBase64 for localStorage backup
       const lightweightClones = items.map((clone) => ({
         ...clone,
         sampleAudioBase64: undefined,
       }));
       localStorage.setItem('bhasha_custom_voice_clones_v1', JSON.stringify(lightweightClones));
     } catch {
-      console.warn('LocalStorage full; clones preserved in IndexedDB.');
+      console.warn('LocalStorage full; clones preserved in IndexedDB/Server.');
     }
+  }
+}
+
+export async function saveStoredClones(items: any[]): Promise<void> {
+  // Save locally
+  await saveStoredClonesLocal(items);
+
+  // Sync to server disk permanently
+  try {
+    await fetch('/api/clones', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clones: items }),
+    });
+  } catch (e) {
+    console.warn('Server clone sync notice:', e);
   }
 }
