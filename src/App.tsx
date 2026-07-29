@@ -21,11 +21,15 @@ import {
   CustomVoiceClone,
 } from './types';
 import { estimatePcmDuration } from './utils/wavEncoder';
+import {
+  getStoredHistory,
+  saveStoredHistory,
+  getStoredClones,
+  saveStoredClones,
+} from './utils/db';
 import { Sparkles, Mic, ShieldCheck, Zap, Heart, AlertCircle, BookOpen, UserPlus } from 'lucide-react';
 
-const STORAGE_KEY = 'bhasha_voice_history_v1';
 const RULES_STORAGE_KEY = 'bhasha_pronunciation_rules_v1';
-const CLONES_STORAGE_KEY = 'bhasha_custom_voice_clones_v1';
 
 const DEFAULT_PRONUNCIATION_RULES: PronunciationRule[] = [
   { id: 'p1', word: 'API', phonetic: 'Aay Pee Eye', language: 'all', enabled: true, notes: 'Technical abbreviation' },
@@ -53,21 +57,18 @@ export default function App() {
   });
 
   // Custom Voice Clones State
-  const [customClones, setCustomClones] = useState<CustomVoiceClone[]>(() => {
-    try {
-      const saved = localStorage.getItem(CLONES_STORAGE_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [customClones, setCustomClones] = useState<CustomVoiceClone[]>([]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(CLONES_STORAGE_KEY, JSON.stringify(customClones));
-    } catch (e) {
-      console.error('Failed to save custom voice clones to localStorage', e);
-    }
+    getStoredClones().then((clones) => {
+      if (clones && clones.length > 0) {
+        setCustomClones(clones);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    saveStoredClones(customClones);
   }, [customClones]);
 
   // Pronunciation Dictionary Rules
@@ -110,25 +111,20 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // History & Active Track
-  const [history, setHistory] = useState<AudioHistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  const [currentAudioTrack, setCurrentAudioTrack] = useState<AudioHistoryItem | null>(() => {
-    return history.length > 0 ? history[0] : null;
-  });
+  const [history, setHistory] = useState<AudioHistoryItem[]>([]);
+  const [currentAudioTrack, setCurrentAudioTrack] = useState<AudioHistoryItem | null>(null);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
-    } catch (e) {
-      console.error('Failed to save history to localStorage', e);
-    }
+    getStoredHistory().then((items) => {
+      if (items && items.length > 0) {
+        setHistory(items);
+        setCurrentAudioTrack((prev) => prev || items[0]);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    saveStoredHistory(history);
   }, [history]);
 
   // Voice Selection Handler
