@@ -202,7 +202,14 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
+      let data;
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(`Server returned error (${response.status}): ${text.substring(0, 120)}`);
+      }
 
       if (!response.ok || !data.success || !data.audioBase64) {
         throw new Error(data.error || 'Failed to generate speech audio.');
@@ -264,7 +271,14 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
+      let data;
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(`Server returned error (${response.status}): ${text.substring(0, 120)}`);
+      }
 
       if (!response.ok || !data.success || !data.audioBase64) {
         throw new Error(data.error || 'Failed to generate dialogue audio.');
@@ -318,7 +332,14 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
+      let data;
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(`Server returned error (${response.status}): ${text.substring(0, 120)}`);
+      }
 
       if (!response.ok || !data.success || !data.enhancedText) {
         throw new Error(data.error || 'Failed to enhance script');

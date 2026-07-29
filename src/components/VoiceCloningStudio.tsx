@@ -42,6 +42,7 @@ export const VoiceCloningStudio: React.FC<VoiceCloningStudioProps> = ({
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [audioBase64, setAudioBase64] = useState<string | null>(null);
+  const [audioMimeType, setAudioMimeType] = useState<string>('audio/webm');
   const [audioFileName, setAudioFileName] = useState<string | null>(null);
 
   // Processing State
@@ -57,8 +58,8 @@ export const VoiceCloningStudio: React.FC<VoiceCloningStudioProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 25 * 1024 * 1024) {
-      setAnalysisError('Audio file is too large (max 25MB). Please upload a shorter audio clip.');
+    if (file.size > 20 * 1024 * 1024) {
+      setAnalysisError('Audio file is too large (max 20MB). Please upload a shorter audio clip.');
       return;
     }
 
@@ -68,8 +69,11 @@ export const VoiceCloningStudio: React.FC<VoiceCloningStudioProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
+      const match = result.match(/^data:(audio\/[a-zA-Z0-9.-]+);base64,/);
+      const mime = match ? match[1] : file.type || 'audio/mp3';
       const b64 = result.split(',')[1] || result;
       setAudioBase64(b64);
+      setAudioMimeType(mime);
     };
     reader.readAsDataURL(file);
   };
@@ -160,11 +164,19 @@ export const VoiceCloningStudio: React.FC<VoiceCloningStudioProps> = ({
           description,
           baseVoice,
           audioBase64,
+          audioMimeType,
           userConsentConfirmed: hasConsent,
         }),
       });
 
-      const data = await response.json();
+      let data;
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(`Server returned error status (${response.status}): ${text.substring(0, 120)}`);
+      }
 
       if (!response.ok || !data.success) {
         throw new Error(data.error || 'Voice analysis failed');

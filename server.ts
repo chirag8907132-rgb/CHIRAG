@@ -8,7 +8,19 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Express JSON body parser error handling middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err) {
+    console.error('Express middleware payload error:', err);
+    return res.status(err.status || 400).json({
+      error: err.message || 'Payload size too large or malformed JSON data.',
+    });
+  }
+  next();
+});
 
 // Lazy initializer for Google GenAI client
 let genAiClient: GoogleGenAI | null = null;
@@ -421,6 +433,7 @@ app.post('/api/clone-voice', async (req, res) => {
       description,
       baseVoice,
       audioBase64,
+      audioMimeType,
       userConsentConfirmed,
     } = req.body;
 
@@ -434,10 +447,13 @@ app.post('/api/clone-voice', async (req, res) => {
 
     const ai = getGenAI();
 
+    // Determine mimeType (e.g., audio/webm, audio/mp3, audio/wav, audio/m4a)
+    const mimeType = audioMimeType || 'audio/webm';
+
     // Use Gemini 3.6 Flash multimodal audio processing to analyze vocal characteristics
     const audioPart = {
       inlineData: {
-        mimeType: 'audio/webm',
+        mimeType: mimeType,
         data: audioBase64,
       },
     };
