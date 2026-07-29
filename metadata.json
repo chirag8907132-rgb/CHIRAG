@@ -1,0 +1,6 @@
+{
+  "name": "BhashaVoice - Text to Audio Generator",
+  "description": "Unlimited human-like text-to-speech audio generator supporting Hindi, English, and Hinglish with expressiveness and multi-speaker options.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
