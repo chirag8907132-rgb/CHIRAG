@@ -56,6 +56,67 @@ function extractAudioBase64(response: any): string | undefined {
   return undefined;
 }
 
+// OpenRouter Multi-Key Audio Generation with Automatic Failover
+async function callOpenRouterTTS(keys: string[], promptText: string, voiceName: string): Promise<string | null> {
+  const validKeys = (keys || []).map((k) => (typeof k === 'string' ? k.trim() : '')).filter(Boolean);
+  if (validKeys.length === 0) return null;
+
+  const models = ['google/gemini-2.5-flash', 'google/gemini-2.0-flash-exp:free', 'openai/gpt-4o-audio-preview', 'google/gemini-flash-1.5'];
+
+  for (let keyIdx = 0; keyIdx < validKeys.length; keyIdx++) {
+    const apiKey = validKeys[keyIdx];
+
+    for (const model of models) {
+      try {
+        console.log(`[OpenRouter] Attempting Key #${keyIdx + 1} with model '${model}'...`);
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://ais.studio',
+            'X-Title': 'BhashaVoice Studio',
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: promptText }],
+            modalities: ['audio', 'text'],
+            audio: { voice: voiceName.toLowerCase(), format: 'wav' },
+          }),
+        });
+
+        if (res.status === 429 || res.status === 402) {
+          console.warn(`[OpenRouter] Key #${keyIdx + 1} quota/rate limit reached (HTTP ${res.status}). Failing over to backup key...`);
+          break; // break model loop to switch to next key immediately
+        }
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.warn(`[OpenRouter] Key #${keyIdx + 1} HTTP ${res.status}: ${errBody.substring(0, 100)}`);
+          continue;
+        }
+
+        const data: any = await res.json();
+        const b64 =
+          data?.choices?.[0]?.message?.audio?.data ||
+          (typeof data?.choices?.[0]?.message?.content === 'string' && data.choices[0].message.content.length > 500
+            ? data.choices[0].message.content
+            : null) ||
+          extractAudioBase64(data);
+
+        if (b64 && typeof b64 === 'string' && b64.length > 100) {
+          console.log(`[OpenRouter] Key #${keyIdx + 1} successfully generated audio output!`);
+          return b64;
+        }
+      } catch (err: any) {
+        console.warn(`[OpenRouter] Key #${keyIdx + 1} exception:`, err?.message || err);
+      }
+    }
+  }
+
+  return null;
+}
+
 // Helper function to execute Gemini API calls with exponential backoff and model fallbacks for 429 Quotas
 async function generateContentWithRetry(aiClient: GoogleGenAI, params: any, maxRetries = 2): Promise<any> {
   const isAudio =
@@ -438,6 +499,21 @@ app.post('/api/tts', async (req, res) => {
       const ruleInstruction = ruleDirective ? ruleDirective + '\n' : '';
       const fullPrompt = `TTS the following multi-speaker dialogue in ${language.toUpperCase()}. ${langDirective} ${toneInstruction}\n${tuningDirective}\n${pauseInstruction}\n${ruleInstruction}\nDialogue:\n${scriptText}`;
 
+      // 1. Try OpenRouter Keys if provided
+      if (req.body.openRouterKeys && Array.isArray(req.body.openRouterKeys) && req.body.openRouterKeys.length > 0) {
+        const openRouterB64 = await callOpenRouterTTS(req.body.openRouterKeys, fullPrompt, voice1);
+        if (openRouterB64) {
+          return res.json({
+            success: true,
+            audioBase64: openRouterB64,
+            voiceName: `${speaker1.name} & ${speaker2.name}`,
+            mode: 'dialogue',
+            source: 'openrouter',
+          });
+        }
+      }
+
+      // 2. Fallback to native Gemini SDK
       const response = await generateContentWithRetry(ai, {
         contents: [{ parts: [{ text: fullPrompt }] }],
         config: {
@@ -476,28 +552,43 @@ app.post('/api/tts', async (req, res) => {
         mode: 'dialogue',
       });
     } else {
-      // Single speaker mode - High-capacity chunking (600 words per chunk) to minimize API quota usage
+      // Single speaker mode - High-capacity chunking (600 words per chunk)
       const textToUse = mainText || text;
-      const chunks = splitTextIntoChunks(textToUse, 600); // ~600 words per chunk to fit in 1 API call
-      console.log(`Processing ${chunks.length} audio chunk(s) for TTS...`);
-
       const rawVoice = customVoiceClone?.baseVoice || voiceName;
       const effectiveVoiceName = VALID_VOICES.includes(rawVoice) ? rawVoice : 'Kore';
       const ruleInstruction = ruleDirective ? ruleDirective + '\n' : '';
+      const promptText = `Instructions: ${langDirective} ${toneInstruction}\n${tuningDirective}\n${cloneDirective}\n${pauseInstruction}\n${ruleInstruction}\nText to speak:\n${textToUse}`;
+
+      // 1. Try OpenRouter Keys if provided
+      if (req.body.openRouterKeys && Array.isArray(req.body.openRouterKeys) && req.body.openRouterKeys.length > 0) {
+        const openRouterB64 = await callOpenRouterTTS(req.body.openRouterKeys, promptText, effectiveVoiceName);
+        if (openRouterB64) {
+          return res.json({
+            success: true,
+            audioBase64: openRouterB64,
+            voiceName: customVoiceClone ? customVoiceClone.name : effectiveVoiceName,
+            mode: 'single',
+            source: 'openrouter',
+          });
+        }
+      }
+
+      // 2. Fallback to native Gemini SDK with chunking
+      const chunks = splitTextIntoChunks(textToUse, 600); // ~600 words per chunk
+      console.log(`Processing ${chunks.length} audio chunk(s) for TTS via Gemini SDK...`);
 
       const audioBuffers: Buffer[] = [];
 
       for (let i = 0; i < chunks.length; i++) {
         const chunkText = chunks[i];
-        const promptText = `Instructions: ${langDirective} ${toneInstruction}\n${tuningDirective}\n${cloneDirective}\n${pauseInstruction}\n${ruleInstruction}\nText to speak (Part ${i + 1} of ${chunks.length}):\n${chunkText}`;
+        const chunkPromptText = `Instructions: ${langDirective} ${toneInstruction}\n${tuningDirective}\n${cloneDirective}\n${pauseInstruction}\n${ruleInstruction}\nText to speak (Part ${i + 1} of ${chunks.length}):\n${chunkText}`;
 
-        // Add 700ms pacing delay between chunk requests to avoid burst rate-limit spikes
         if (i > 0) {
           await new Promise((resolve) => setTimeout(resolve, 700));
         }
 
         const response = await generateContentWithRetry(ai, {
-          contents: [{ parts: [{ text: promptText }] }],
+          contents: [{ parts: [{ text: chunkPromptText }] }],
           config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: {

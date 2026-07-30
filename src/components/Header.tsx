@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic, Sparkles, Languages, History, BookOpen, UserPlus } from 'lucide-react';
+import { Mic, Sparkles, Languages, History, BookOpen, UserPlus, Key } from 'lucide-react';
 import { Language } from '../types';
 
 interface HeaderProps {
@@ -10,6 +10,8 @@ interface HeaderProps {
   historyCount: number;
   rulesCount?: number;
   clonesCount?: number;
+  onOpenOpenRouterModal?: () => void;
+  hasOpenRouterKey?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -20,6 +22,8 @@ export const Header: React.FC<HeaderProps> = ({
   historyCount,
   rulesCount = 0,
   clonesCount = 0,
+  onOpenOpenRouterModal,
+  hasOpenRouterKey,
 }) => {
   return (
     <header className="sticky top-0 z-40 bg-[#0a0502]/80 backdrop-blur-2xl border-b border-white/10 text-white transition-all">
@@ -120,6 +124,19 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
               )}
             </button>
+
+            {onOpenOpenRouterModal && (
+              <button
+                onClick={onOpenOpenRouterModal}
+                className="relative flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 transition-all shadow-md shadow-orange-500/10"
+              >
+                <Key className="w-3.5 h-3.5 mr-1.5" />
+                <span>API Keys</span>
+                {hasOpenRouterKey && (
+                  <span className="ml-1.5 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                )}
+              </button>
+            )}
           </nav>
 
           {/* Quick Language Switcher */}

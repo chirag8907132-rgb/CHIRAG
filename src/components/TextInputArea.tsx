@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Language } from '../types';
 import { LANGUAGE_OPTIONS, SAMPLE_SCRIPTS } from '../data/voicesAndPresets';
-import { Sparkles, Languages, Volume2, RefreshCw, Trash2, Clock, FileText, Wand2, PlusCircle, Check } from 'lucide-react';
+import { Sparkles, Languages, Volume2, RefreshCw, Trash2, Clock, FileText, Wand2, PlusCircle, Check, Key, AlertCircle } from 'lucide-react';
+import { ProgressBar } from './ProgressBar';
 
 interface TextInputAreaProps {
   text: string;
@@ -13,6 +14,9 @@ interface TextInputAreaProps {
   onEnhanceScript: (action: 'enhance' | 'translate_hinglish' | 'translate_hindi' | 'add_emotions' | 'auto_pauses') => void;
   isEnhancing: boolean;
   rateLimitSeconds?: number;
+  generationProgress?: number;
+  errorMessage?: string | null;
+  onOpenOpenRouterModal?: () => void;
 }
 
 export const TextInputArea: React.FC<TextInputAreaProps> = ({
@@ -25,6 +29,9 @@ export const TextInputArea: React.FC<TextInputAreaProps> = ({
   onEnhanceScript,
   isEnhancing,
   rateLimitSeconds,
+  generationProgress = 0,
+  errorMessage,
+  onOpenOpenRouterModal,
 }) => {
   const [copiedSample, setCopiedSample] = useState(false);
 
@@ -243,23 +250,14 @@ export const TextInputArea: React.FC<TextInputAreaProps> = ({
 
         <button
           type="button"
-          disabled={!text.trim() || isGenerating || (rateLimitSeconds !== undefined && rateLimitSeconds > 0)}
+          disabled={!text.trim() || isGenerating}
           onClick={onGenerateAudio}
-          className={`w-full sm:w-auto px-8 py-4 rounded-xl font-bold text-white shadow-xl uppercase tracking-widest text-xs sm:text-sm hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none ${
-            rateLimitSeconds && rateLimitSeconds > 0
-              ? 'bg-amber-600/80 border border-amber-400/50 shadow-amber-500/20'
-              : 'bg-gradient-to-r from-[#ff4e00] to-[#ec4899] shadow-orange-500/20'
-          }`}
+          className="w-full sm:w-auto px-8 py-4 rounded-xl font-bold text-white shadow-xl uppercase tracking-widest text-xs sm:text-sm hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none bg-gradient-to-r from-[#ff4e00] to-[#ec4899] shadow-orange-500/20"
         >
           {isGenerating ? (
             <>
               <RefreshCw className="w-5 h-5 animate-spin text-white" />
-              <span>Synthesizing Audio...</span>
-            </>
-          ) : rateLimitSeconds && rateLimitSeconds > 0 ? (
-            <>
-              <Clock className="w-5 h-5 animate-pulse text-amber-200" />
-              <span>Quota Cooldown ({rateLimitSeconds}s)</span>
+              <span>Generating Audio ({Math.round(generationProgress)}%)...</span>
             </>
           ) : (
             <>
@@ -269,6 +267,35 @@ export const TextInputArea: React.FC<TextInputAreaProps> = ({
           )}
         </button>
       </div>
+
+      {/* Generation Progress Bar - Rendered Directly Below Generate Button */}
+      <ProgressBar progress={generationProgress} isGenerating={isGenerating} />
+
+      {/* Quota Notice & Error Card - Rendered Directly Below Generate Button & Progress Bar */}
+      {errorMessage && (
+        <div className="bg-rose-950/70 border border-rose-500/50 rounded-xl p-4 text-rose-200 text-xs space-y-2.5 shadow-xl animate-fade-in mt-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center space-x-2 font-bold text-rose-300">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>Generation Alert</span>
+            </div>
+            {onOpenOpenRouterModal && (
+              <button
+                type="button"
+                onClick={onOpenOpenRouterModal}
+                className="px-2.5 py-1 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 rounded-lg text-[11px] font-bold flex items-center space-x-1"
+              >
+                <Key className="w-3 h-3" />
+                <span>Add OpenRouter API Keys</span>
+              </button>
+            )}
+          </div>
+          <p className="text-rose-200/90 leading-relaxed">{errorMessage}</p>
+          <div className="text-[11px] text-rose-300/80">
+            Tip: Add your OpenRouter API keys in Settings to enjoy unlimited high-speed audio generation without free-tier rate limits!
+          </div>
+        </div>
+      )}
     </div>
   );
 };

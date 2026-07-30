@@ -1,7 +1,8 @@
 import React from 'react';
 import { DialogueSpeaker, DialogueTurn, VoiceName, Language } from '../types';
 import { VOICES } from '../data/voicesAndPresets';
-import { Users, Plus, Trash2, Volume2, RefreshCw, Sparkles, MessageSquare, Clock } from 'lucide-react';
+import { Users, Plus, Trash2, Volume2, RefreshCw, Sparkles, MessageSquare, Clock, AlertCircle, Key } from 'lucide-react';
+import { ProgressBar } from './ProgressBar';
 
 interface DialogueEditorProps {
   speakers: DialogueSpeaker[];
@@ -12,6 +13,9 @@ interface DialogueEditorProps {
   isGenerating: boolean;
   activeLanguage: Language;
   rateLimitSeconds?: number;
+  generationProgress?: number;
+  errorMessage?: string | null;
+  onOpenOpenRouterModal?: () => void;
 }
 
 export const DialogueEditor: React.FC<DialogueEditorProps> = ({
@@ -23,6 +27,9 @@ export const DialogueEditor: React.FC<DialogueEditorProps> = ({
   isGenerating,
   activeLanguage,
   rateLimitSeconds,
+  generationProgress = 0,
+  errorMessage,
+  onOpenOpenRouterModal,
 }) => {
   const handleUpdateSpeaker = (id: string, field: 'name' | 'voiceName', value: string) => {
     onChangeSpeakers(
@@ -227,32 +234,49 @@ export const DialogueEditor: React.FC<DialogueEditorProps> = ({
       <div className="pt-4 border-t border-white/10 flex justify-end">
         <button
           type="button"
-          disabled={turns.length === 0 || turns.some((t) => !t.text.trim()) || isGenerating || (rateLimitSeconds !== undefined && rateLimitSeconds > 0)}
+          disabled={turns.length === 0 || turns.some((t) => !t.text.trim()) || isGenerating}
           onClick={onGenerateDialogue}
-          className={`w-full sm:w-auto px-8 py-4 rounded-xl font-bold text-white shadow-xl uppercase tracking-widest text-xs sm:text-sm hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none ${
-            rateLimitSeconds && rateLimitSeconds > 0
-              ? 'bg-amber-600/80 border border-amber-400/50 shadow-amber-500/20'
-              : 'bg-gradient-to-r from-[#ff4e00] to-[#ec4899] shadow-orange-500/20'
-          }`}
+          className="w-full sm:w-auto px-8 py-4 rounded-xl font-bold text-white shadow-xl uppercase tracking-widest text-xs sm:text-sm hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none bg-gradient-to-r from-[#ff4e00] to-[#ec4899] shadow-orange-500/20"
         >
           {isGenerating ? (
             <>
               <RefreshCw className="w-5 h-5 animate-spin text-white" />
-              <span>Synthesizing Audio...</span>
-            </>
-          ) : rateLimitSeconds && rateLimitSeconds > 0 ? (
-            <>
-              <Clock className="w-5 h-5 animate-pulse text-amber-200" />
-              <span>Quota Cooldown ({rateLimitSeconds}s)</span>
+              <span>Generating Dialogue ({Math.round(generationProgress)}%)...</span>
             </>
           ) : (
             <>
               <Volume2 className="w-5 h-5 text-white" />
-              <span>Generate Audio</span>
+              <span>Generate Dialogue Audio</span>
             </>
           )}
         </button>
       </div>
+
+      {/* Generation Progress Bar */}
+      <ProgressBar progress={generationProgress} isGenerating={isGenerating} />
+
+      {/* Error & Quota Alert */}
+      {errorMessage && (
+        <div className="bg-rose-950/70 border border-rose-500/50 rounded-xl p-4 text-rose-200 text-xs space-y-2.5 shadow-xl animate-fade-in mt-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center space-x-2 font-bold text-rose-300">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>Generation Alert</span>
+            </div>
+            {onOpenOpenRouterModal && (
+              <button
+                type="button"
+                onClick={onOpenOpenRouterModal}
+                className="px-2.5 py-1 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 rounded-lg text-[11px] font-bold flex items-center space-x-1"
+              >
+                <Key className="w-3 h-3" />
+                <span>Add OpenRouter API Keys</span>
+              </button>
+            )}
+          </div>
+          <p className="text-rose-200/90 leading-relaxed">{errorMessage}</p>
+        </div>
+      )}
     </div>
   );
 };

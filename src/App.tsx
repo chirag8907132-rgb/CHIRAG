@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { VoiceSelector } from './components/VoiceSelector';
 import { ToneSelector } from './components/ToneSelector';
@@ -9,6 +9,7 @@ import { DialogueEditor } from './components/DialogueEditor';
 import { AudioPlayerCard } from './components/AudioPlayerCard';
 import { HistoryDrawer } from './components/HistoryDrawer';
 import { PronunciationDictionary } from './components/PronunciationDictionary';
+import { OpenRouterModal } from './components/OpenRouterModal';
 import {
   Language,
   VoiceName,
@@ -27,9 +28,11 @@ import {
   getStoredClones,
   saveStoredClones,
 } from './utils/db';
-import { Sparkles, Mic, ShieldCheck, Zap, Heart, AlertCircle, BookOpen, UserPlus, Clock } from 'lucide-react';
+import { Sparkles, Mic, ShieldCheck, Zap, Heart, AlertCircle, BookOpen, UserPlus, Key } from 'lucide-react';
 
 const RULES_STORAGE_KEY = 'bhasha_pronunciation_rules_v1';
+const OPENROUTER_KEY1_STORAGE = 'openrouter_key1_v1';
+const OPENROUTER_KEY2_STORAGE = 'openrouter_key2_v1';
 
 const DEFAULT_PRONUNCIATION_RULES: PronunciationRule[] = [
   { id: 'p1', word: 'API', phonetic: 'Aay Pee Eye', language: 'all', enabled: true, notes: 'Technical abbreviation' },
@@ -46,6 +49,22 @@ export default function App() {
   const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
   const [selectedCustomClone, setSelectedCustomClone] = useState<CustomVoiceClone | undefined>(undefined);
   const [selectedTone, setSelectedTone] = useState<EmotionTone>('conversational');
+
+  // OpenRouter API Keys State
+  const [openRouterKey1, setOpenRouterKey1] = useState<string>(
+    () => localStorage.getItem(OPENROUTER_KEY1_STORAGE) || ''
+  );
+  const [openRouterKey2, setOpenRouterKey2] = useState<string>(
+    () => localStorage.getItem(OPENROUTER_KEY2_STORAGE) || ''
+  );
+  const [isOpenRouterModalOpen, setIsOpenRouterModalOpen] = useState<boolean>(false);
+
+  const handleSaveOpenRouterKeys = (k1: string, k2: string) => {
+    setOpenRouterKey1(k1);
+    setOpenRouterKey2(k2);
+    localStorage.setItem(OPENROUTER_KEY1_STORAGE, k1);
+    localStorage.setItem(OPENROUTER_KEY2_STORAGE, k2);
+  };
 
   // Voice Tuning Configuration State
   const [tuningConfig, setTuningConfig] = useState<VoiceTuningConfig>({
@@ -107,43 +126,40 @@ export default function App() {
 
   // Generation & Status
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<number>(0);
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Rate Limit / Quota Cooldown State
-  const [rateLimitSeconds, setRateLimitSeconds] = useState<number>(0);
-  const [initialRateLimitMax, setInitialRateLimitMax] = useState<number>(25);
-  const [autoRetryPending, setAutoRetryPending] = useState<boolean>(false);
+  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Countdown timer effect for rate limiting
-  useEffect(() => {
-    if (rateLimitSeconds <= 0) return;
+  const startProgressSimulation = () => {
+    setGenerationProgress(5);
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
 
-    const timer = setInterval(() => {
-      setRateLimitSeconds((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
+    progressIntervalRef.current = setInterval(() => {
+      setGenerationProgress((prev) => {
+        if (prev >= 92) return 92;
+        const step = prev < 30 ? 6 : prev < 70 ? 4 : 2;
+        return prev + step;
       });
-    }, 1000);
+    }, 300);
+  };
 
-    return () => clearInterval(timer);
-  }, [rateLimitSeconds]);
+  const finishProgressSimulation = (onComplete?: () => void) => {
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    setGenerationProgress(100);
+    setTimeout(() => {
+      setIsGenerating(false);
+      if (onComplete) onComplete();
+      setTimeout(() => setGenerationProgress(0), 1000);
+    }, 400);
+  };
 
-  // Handle auto-retry when rate limit cooldown completes (if explicitly enabled by user)
-  useEffect(() => {
-    if (rateLimitSeconds === 0 && autoRetryPending) {
-      setAutoRetryPending(false);
-      setErrorMessage(null);
-      if (activeTab === 'single') {
-        handleGenerateSingleAudio();
-      } else if (activeTab === 'dialogue') {
-        handleGenerateDialogueAudio();
-      }
-    }
-  }, [rateLimitSeconds]);
+  const cancelProgressSimulation = () => {
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    setIsGenerating(false);
+    setGenerationProgress(0);
+  };
 
   // History & Active Track
   const [history, setHistory] = useState<AudioHistoryItem[]>([]);
@@ -216,8 +232,11 @@ export default function App() {
     if (!text.trim()) return;
     setIsGenerating(true);
     setErrorMessage(null);
+    startProgressSimulation();
 
     try {
+      const openRouterKeys = [openRouterKey1, openRouterKey2].filter(Boolean);
+
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -230,6 +249,7 @@ export default function App() {
           tuningConfig,
           customVoiceClone: selectedCustomClone,
           pronunciationRules: pronunciationRules.filter((r) => r.enabled),
+          openRouterKeys,
         }),
       });
 
@@ -238,31 +258,18 @@ export default function App() {
       if (contentType.includes('application/json')) {
         data = await response.json();
       } else {
-        const text = await response.text();
-        throw new Error(`Server returned error (${response.status}): ${text.substring(0, 120)}`);
+        const textErr = await response.text();
+        throw new Error(`Server error (${response.status}): ${textErr.substring(0, 120)}`);
       }
 
       if (!response.ok || !data.success || !data.audioBase64) {
-        if (response.status === 429 || data?.isQuotaExceeded) {
-          const retrySec = data?.retryAfter || 20;
-          setRateLimitSeconds(retrySec);
-          setInitialRateLimitMax(retrySec);
-          setAutoRetryPending(false);
-          setErrorMessage(
-            data?.error || `Gemini audio rate limit reached. Please wait ~${retrySec} seconds before requesting audio.`
-          );
-          return;
-        }
-        throw new Error(data?.error || 'Failed to generate speech audio.');
+        throw new Error(
+          data?.error || 'Rate limit reached or generation failed. Add an OpenRouter API key to bypass limits.'
+        );
       }
-
-      setRateLimitSeconds(0);
-      setAutoRetryPending(false);
-      setErrorMessage(null);
 
       const wordCount = text.trim().split(/\s+/).length;
       const durationSeconds = estimatePcmDuration(data.audioBase64);
-
       const displayVoiceName = selectedCustomClone ? selectedCustomClone.name : selectedVoice;
 
       const newItem: AudioHistoryItem = {
@@ -281,24 +288,17 @@ export default function App() {
         customVoiceClone: selectedCustomClone,
       };
 
-      setHistory((prev) => [newItem, ...prev]);
-      setCurrentAudioTrack(newItem);
+      finishProgressSimulation(() => {
+        setHistory((prev) => [newItem, ...prev]);
+        setCurrentAudioTrack(newItem);
+        setErrorMessage(null);
+      });
     } catch (err: any) {
       console.error('Error generating audio:', err);
-      const msg = err.message || '';
-      if (msg.includes('429') || msg.includes('rate limit') || msg.includes('Quota exceeded')) {
-        const retrySec = 20;
-        setRateLimitSeconds(retrySec);
-        setInitialRateLimitMax(retrySec);
-        setAutoRetryPending(false);
-        setErrorMessage(
-          `Gemini audio rate limit reached. Please wait ~${retrySec}s before trying again.`
-        );
-      } else {
-        setErrorMessage(msg || 'An unexpected error occurred while generating audio.');
-      }
-    } finally {
-      setIsGenerating(false);
+      cancelProgressSimulation();
+      setErrorMessage(
+        err.message || 'Error generating audio. Consider adding OpenRouter API keys in settings.'
+      );
     }
   };
 
@@ -307,8 +307,11 @@ export default function App() {
     if (dialogueTurns.length === 0) return;
     setIsGenerating(true);
     setErrorMessage(null);
+    startProgressSimulation();
 
     try {
+      const openRouterKeys = [openRouterKey1, openRouterKey2].filter(Boolean);
+
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -324,6 +327,7 @@ export default function App() {
             customVoiceClone: s.customVoiceClone,
           })),
           pronunciationRules: pronunciationRules.filter((r) => r.enabled),
+          openRouterKeys,
         }),
       });
 
@@ -332,27 +336,13 @@ export default function App() {
       if (contentType.includes('application/json')) {
         data = await response.json();
       } else {
-        const text = await response.text();
-        throw new Error(`Server returned error (${response.status}): ${text.substring(0, 120)}`);
+        const textErr = await response.text();
+        throw new Error(`Server error (${response.status}): ${textErr.substring(0, 120)}`);
       }
 
       if (!response.ok || !data.success || !data.audioBase64) {
-        if (response.status === 429 || data?.isQuotaExceeded) {
-          const retrySec = data?.retryAfter || 20;
-          setRateLimitSeconds(retrySec);
-          setInitialRateLimitMax(retrySec);
-          setAutoRetryPending(false);
-          setErrorMessage(
-            data?.error || `Gemini audio rate limit reached. Please wait ~${retrySec} seconds before requesting audio.`
-          );
-          return;
-        }
         throw new Error(data?.error || 'Failed to generate dialogue audio.');
       }
-
-      setRateLimitSeconds(0);
-      setAutoRetryPending(false);
-      setErrorMessage(null);
 
       const combinedText = dialogueTurns.map((t) => `${t.speakerName}: ${t.text}`).join(' ');
       const wordCount = combinedText.split(/\s+/).length;
@@ -373,24 +363,15 @@ export default function App() {
         tuningConfig,
       };
 
-      setHistory((prev) => [newItem, ...prev]);
-      setCurrentAudioTrack(newItem);
+      finishProgressSimulation(() => {
+        setHistory((prev) => [newItem, ...prev]);
+        setCurrentAudioTrack(newItem);
+        setErrorMessage(null);
+      });
     } catch (err: any) {
       console.error('Error generating dialogue audio:', err);
-      const msg = err.message || '';
-      if (msg.includes('429') || msg.includes('rate limit') || msg.includes('Quota exceeded')) {
-        const retrySec = 20;
-        setRateLimitSeconds(retrySec);
-        setInitialRateLimitMax(retrySec);
-        setAutoRetryPending(false);
-        setErrorMessage(
-          `Gemini audio rate limit reached. Please wait ~${retrySec}s before trying again.`
-        );
-      } else {
-        setErrorMessage(msg || 'An unexpected error occurred while generating dialogue audio.');
-      }
-    } finally {
-      setIsGenerating(false);
+      cancelProgressSimulation();
+      setErrorMessage(err.message || 'An unexpected error occurred while generating dialogue.');
     }
   };
 
@@ -418,8 +399,8 @@ export default function App() {
       if (contentType.includes('application/json')) {
         data = await response.json();
       } else {
-        const text = await response.text();
-        throw new Error(`Server returned error (${response.status}): ${text.substring(0, 120)}`);
+        const textErr = await response.text();
+        throw new Error(`Server error (${response.status}): ${textErr.substring(0, 120)}`);
       }
 
       if (!response.ok || !data.success || !data.enhancedText) {
@@ -483,10 +464,98 @@ export default function App() {
           historyCount={history.length}
           rulesCount={pronunciationRules.filter((r) => r.enabled).length}
           clonesCount={customClones.length}
+          onOpenOpenRouterModal={() => setIsOpenRouterModalOpen(true)}
+          hasOpenRouterKey={Boolean(openRouterKey1 || openRouterKey2)}
+        />
+
+        {/* OpenRouter Multi-Key Settings Modal */}
+        <OpenRouterModal
+          isOpen={isOpenRouterModalOpen}
+          onClose={() => setIsOpenRouterModalOpen(false)}
+          openRouterKey1={openRouterKey1}
+          openRouterKey2={openRouterKey2}
+          onSaveKeys={handleSaveOpenRouterKeys}
         />
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
-          {/* Banner */}
+          {/* Prominent OpenRouter API Key Input Banner */}
+          {(!openRouterKey1 && !openRouterKey2) ? (
+            <div className="bg-gradient-to-r from-orange-950/80 via-[#180d07] to-pink-950/80 backdrop-blur-xl border border-orange-500/40 rounded-2xl p-5 text-white shadow-2xl space-y-4 animate-fade-in">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-3 border-b border-white/10">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 rounded-xl bg-orange-500/20 border border-orange-500/40 flex items-center justify-center shrink-0 text-orange-400">
+                    <Key className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                      <span>Enter OpenRouter API Keys (Recommended)</span>
+                      <span className="px-2 py-0.5 rounded-md bg-orange-500/20 text-orange-300 border border-orange-500/30 text-[10px] font-mono">
+                        Dual Key Failover
+                      </span>
+                    </h3>
+                    <p className="text-xs text-white/60 mt-0.5">
+                      Enter 2 OpenRouter keys so if Key #1 hits usage limits, Key #2 automatically takes over without stopping generation.
+                    </p>
+                  </div>
+                </div>
+
+                <a
+                  href="https://openrouter.ai/keys"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3.5 py-1.5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-xs font-bold text-orange-300 transition-colors shrink-0"
+                >
+                  Get Keys on OpenRouter.ai →
+                </a>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-orange-200/90 flex items-center justify-between">
+                    <span>Primary OpenRouter API Key (#1)</span>
+                    <span className="text-[10px] text-orange-400/80 font-mono">sk-or-v1-...</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={openRouterKey1}
+                    onChange={(e) => handleSaveOpenRouterKeys(e.target.value, openRouterKey2)}
+                    placeholder="Paste OpenRouter Key #1 here..."
+                    className="w-full bg-black/50 border border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-white/30 font-mono focus:outline-none focus:border-orange-500 transition-colors"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-pink-200/90 flex items-center justify-between">
+                    <span>Backup OpenRouter API Key (#2)</span>
+                    <span className="text-[10px] text-pink-400/80 font-mono">sk-or-v1-...</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={openRouterKey2}
+                    onChange={(e) => handleSaveOpenRouterKeys(openRouterKey1, e.target.value)}
+                    placeholder="Paste OpenRouter Key #2 here..."
+                    className="w-full bg-black/50 border border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-white/30 font-mono focus:outline-none focus:border-orange-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-xl px-4 py-2.5 text-xs text-emerald-200 flex items-center justify-between shadow-lg">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="font-bold">OpenRouter Keys Active:</span>
+                <span className="font-mono text-emerald-300/80">
+                  {openRouterKey1 ? 'Key #1 Set' : ''} {openRouterKey1 && openRouterKey2 ? '•' : ''} {openRouterKey2 ? 'Key #2 (Backup) Set' : ''}
+                </span>
+              </div>
+              <button
+                onClick={() => setIsOpenRouterModalOpen(true)}
+                className="text-xs font-bold text-orange-400 hover:underline flex items-center space-x-1"
+              >
+                <span>Edit Keys</span>
+              </button>
+            </div>
+          )}
           <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5 shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="space-y-1.5">
               <div className="flex items-center space-x-2">
@@ -497,7 +566,7 @@ export default function App() {
                 <div className="flex items-center gap-1.5 px-3 py-1 bg-white/5 border border-white/10 rounded-full">
                   <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
                   <span className="text-[11px] font-semibold tracking-wider text-emerald-400">
-                    Neural Human Synthesizer Active
+                    Neural Synthesizer Active
                   </span>
                 </div>
               </div>
@@ -511,136 +580,23 @@ export default function App() {
 
             <div className="flex items-center space-x-2 shrink-0">
               <button
-                onClick={() => setActiveLanguage('auto')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all border ${
-                  activeLanguage === 'auto'
-                    ? 'bg-white text-black border-white shadow-lg shadow-white/10'
-                    : 'bg-white/5 text-white/80 border-white/10 hover:bg-white/10'
-                }`}
+                onClick={() => setIsOpenRouterModalOpen(true)}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold transition-all border bg-orange-500/20 text-orange-300 border-orange-500/40 hover:bg-orange-500/30 flex items-center space-x-1.5 shadow-lg shadow-orange-500/10"
               >
-                ✨ Auto Detect
-              </button>
-              <button
-                onClick={() => setActiveLanguage('hinglish')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all border ${
-                  activeLanguage === 'hinglish'
-                    ? 'bg-white text-black border-white shadow-lg shadow-white/10'
-                    : 'bg-white/5 text-white/80 border-white/10 hover:bg-white/10'
-                }`}
-              >
-                🇮🇳 Hinglish
-              </button>
-              <button
-                onClick={() => setActiveLanguage('hi')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all border ${
-                  activeLanguage === 'hi'
-                    ? 'bg-white text-black border-white shadow-lg shadow-white/10'
-                    : 'bg-white/5 text-white/80 border-white/10 hover:bg-white/10'
-                }`}
-              >
-                🇮🇳 हिंदी
-              </button>
-              <button
-                onClick={() => setActiveLanguage('en')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all border ${
-                  activeLanguage === 'en'
-                    ? 'bg-white text-black border-white shadow-lg shadow-white/10'
-                    : 'bg-white/5 text-white/80 border-white/10 hover:bg-white/10'
-                }`}
-              >
-                🌐 English
+                <Key className="w-3.5 h-3.5" />
+                <span>API Keys (Failover Active)</span>
               </button>
             </div>
           </div>
 
-          {/* Rate Limit Cooldown Card */}
-          {rateLimitSeconds > 0 ? (
-            <div className="bg-amber-950/70 backdrop-blur-xl border border-amber-500/50 rounded-2xl p-5 text-amber-100 text-sm space-y-3.5 shadow-2xl animate-fade-in">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
-                    <Clock className="w-5 h-5 text-amber-400 animate-spin" style={{ animationDuration: '4s' }} />
-                  </div>
-                  <div>
-                    <div className="flex items-center space-x-2">
-                      <p className="font-bold text-amber-200 text-base">Gemini Audio Free Tier Cooldown Active</p>
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/30 text-amber-300 border border-amber-500/40">
-                        3 Req / Min Limit
-                      </span>
-                    </div>
-                    <p className="text-xs text-amber-200/80 mt-1">
-                      Gemini free tier allows 3 audio generation calls per minute. The quota resets automatically every 60 seconds.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="text-right shrink-0">
-                  <span className="text-3xl font-extrabold text-amber-300 font-mono tracking-tight">
-                    {rateLimitSeconds}s
-                  </span>
-                  <p className="text-[10px] text-amber-400/80 font-bold uppercase tracking-wider">Remaining</p>
-                </div>
-              </div>
-
-              {/* Progress Bar */}
-              <div className="w-full bg-amber-950/80 border border-amber-500/30 rounded-full h-2.5 overflow-hidden p-0.5">
-                <div
-                  className="bg-gradient-to-r from-amber-500 to-orange-400 h-full rounded-full transition-all duration-1000 ease-linear shadow-lg"
-                  style={{
-                    width: `${Math.max(0, Math.min(100, ((initialRateLimitMax - rateLimitSeconds) / initialRateLimitMax) * 100))}%`,
-                  }}
-                />
-              </div>
-
-              <div className="flex items-center justify-between pt-1 text-xs">
-                <label className="flex items-center space-x-2 cursor-pointer select-none text-amber-200 hover:text-white">
-                  <input
-                    type="checkbox"
-                    checked={autoRetryPending}
-                    onChange={(e) => setAutoRetryPending(e.target.checked)}
-                    className="rounded border-amber-500/50 bg-amber-950 text-amber-500 focus:ring-amber-500 focus:ring-offset-0"
-                  />
-                  <span>⚡ Auto-generate audio automatically when countdown hits 0</span>
-                </label>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRateLimitSeconds(0);
-                    setErrorMessage(null);
-                  }}
-                  className="text-amber-400 hover:text-amber-200 font-bold underline text-xs"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          ) : errorMessage ? (
-            /* Standard Error Alert Box */
-            <div className="bg-rose-950/60 backdrop-blur-xl border border-rose-500/50 rounded-2xl p-4 text-rose-200 text-sm flex items-start space-x-3 shadow-xl">
-              <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="font-bold text-rose-300">Generation Notice</p>
-                <p className="text-xs text-rose-200/80 mt-0.5">{errorMessage}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setErrorMessage(null)}
-                className="text-xs text-rose-400 hover:text-rose-200 font-bold underline"
-              >
-                Dismiss
-              </button>
-            </div>
-          ) : null}
-
-          {/* Active Generated Audio Track Player */}
-          {currentAudioTrack && (
-            <div className="space-y-2">
+          {/* Active Generated Audio Track Player (Only Current Generated Audio shown on Homepage) */}
+          {(activeTab === 'single' || activeTab === 'dialogue') && currentAudioTrack && (
+            <div className="space-y-2 animate-fade-in">
               <div className="flex items-center justify-between text-xs text-white/50 font-bold uppercase tracking-widest px-1">
                 <span className="flex items-center text-[#ff4e00]">
-                  <Zap className="w-3.5 h-3.5 mr-1" /> Active Audio Output
+                  <Zap className="w-3.5 h-3.5 mr-1" /> Active Generated Audio Track
                 </span>
-                <span>High Quality • {currentAudioTrack.durationSeconds}s</span>
+                <span>High Quality PCM • {currentAudioTrack.durationSeconds}s</span>
               </div>
               <AudioPlayerCard item={currentAudioTrack} onToggleFavorite={handleToggleFavorite} />
             </div>
@@ -692,7 +648,9 @@ export default function App() {
                 isGenerating={isGenerating}
                 onEnhanceScript={handleEnhanceScript}
                 isEnhancing={isEnhancing}
-                rateLimitSeconds={rateLimitSeconds}
+                generationProgress={generationProgress}
+                errorMessage={errorMessage}
+                onOpenOpenRouterModal={() => setIsOpenRouterModalOpen(true)}
               />
             </div>
           )}
@@ -708,7 +666,9 @@ export default function App() {
                 onGenerateDialogue={handleGenerateDialogueAudio}
                 isGenerating={isGenerating}
                 activeLanguage={activeLanguage}
-                rateLimitSeconds={rateLimitSeconds}
+                generationProgress={generationProgress}
+                errorMessage={errorMessage}
+                onOpenOpenRouterModal={() => setIsOpenRouterModalOpen(true)}
               />
             </div>
           )}
