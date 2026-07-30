@@ -287,7 +287,15 @@ export const VoiceCloningStudio: React.FC<VoiceCloningStudioProps> = ({
             <label className="text-xs font-medium text-white/60">Gender & Age Profile</label>
             <select
               value={gender}
-              onChange={(e) => setGender(e.target.value as Gender)}
+              onChange={(e) => {
+                const newGender = e.target.value as Gender;
+                setGender(newGender);
+                if (newGender === 'male' && (baseVoice === 'Kore' || baseVoice === 'Zephyr')) {
+                  setBaseVoice('Fenrir');
+                } else if (newGender === 'female' && (baseVoice === 'Fenrir' || baseVoice === 'Puck' || baseVoice === 'Charon')) {
+                  setBaseVoice('Kore');
+                }
+              }}
               className="w-full mt-1 bg-black/40 text-white text-xs rounded-xl p-3 border border-white/10 focus:outline-none"
             >
               <option value="female" className="bg-[#1a0c05] text-white">Female Voice</option>

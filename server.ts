@@ -61,11 +61,36 @@ async function callOpenRouterTTS(keys: string[], promptText: string, voiceName: 
   const validKeys = (keys || []).map((k) => (typeof k === 'string' ? k.trim() : '')).filter(Boolean);
   if (validKeys.length === 0) return null;
 
-  const models = ['google/gemini-2.5-flash', 'google/gemini-2.0-flash-exp:free', 'openai/gpt-4o-audio-preview', 'google/gemini-flash-1.5'];
+  // OpenRouter model IDs for text/audio generation
+  const models = ['google/gemini-2.5-flash', 'google/gemini-2.0-flash-001', 'openai/gpt-4o-mini', 'meta-llama/llama-3.3-70b-instruct'];
 
   for (let keyIdx = 0; keyIdx < validKeys.length; keyIdx++) {
     const apiKey = validKeys[keyIdx];
 
+    // If key is a native Google Gemini API key (starts with AIza)
+    if (apiKey.startsWith('AIza')) {
+      try {
+        console.log(`[Key Handler] Detected native Google Gemini API key #${keyIdx + 1}`);
+        const customAi = new GoogleGenAI({ apiKey });
+        const res = await generateContentWithRetry(customAi, {
+          contents: [{ parts: [{ text: promptText }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: voiceName as any },
+              },
+            },
+          },
+        });
+        const b64 = extractAudioBase64(res);
+        if (b64) return b64;
+      } catch (err: any) {
+        console.warn(`[Key Handler] Native Gemini key #${keyIdx + 1} failed:`, err?.message || err);
+      }
+    }
+
+    // OpenRouter API key attempt
     for (const model of models) {
       try {
         console.log(`[OpenRouter] Attempting Key #${keyIdx + 1} with model '${model}'...`);
@@ -80,8 +105,6 @@ async function callOpenRouterTTS(keys: string[], promptText: string, voiceName: 
           body: JSON.stringify({
             model,
             messages: [{ role: 'user', content: promptText }],
-            modalities: ['audio', 'text'],
-            audio: { voice: voiceName.toLowerCase(), format: 'wav' },
           }),
         });
 
@@ -105,7 +128,7 @@ async function callOpenRouterTTS(keys: string[], promptText: string, voiceName: 
           extractAudioBase64(data);
 
         if (b64 && typeof b64 === 'string' && b64.length > 100) {
-          console.log(`[OpenRouter] Key #${keyIdx + 1} successfully generated audio output!`);
+          console.log(`[OpenRouter] Key #${keyIdx + 1} successfully generated output!`);
           return b64;
         }
       } catch (err: any) {
@@ -117,8 +140,8 @@ async function callOpenRouterTTS(keys: string[], promptText: string, voiceName: 
   return null;
 }
 
-// Helper function to execute Gemini API calls with exponential backoff and model fallbacks for 429 Quotas
-async function generateContentWithRetry(aiClient: GoogleGenAI, params: any, maxRetries = 2): Promise<any> {
+// Helper function to execute Gemini API calls with exponential backoff and model fallbacks for 429 / 503 errors
+async function generateContentWithRetry(aiClient: GoogleGenAI, params: any, maxRetries = 3): Promise<any> {
   const isAudio =
     params.config?.responseModalities?.includes(Modality.AUDIO) ||
     params.config?.responseModalities?.includes('AUDIO');
@@ -126,7 +149,7 @@ async function generateContentWithRetry(aiClient: GoogleGenAI, params: any, maxR
   const modelsToTry = params.model
     ? [params.model]
     : isAudio
-    ? ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
+    ? ['gemini-3.1-flash-tts-preview']
     : ['gemini-3.6-flash', 'gemini-3.1-pro-preview'];
 
   let lastError: any = null;
@@ -143,31 +166,40 @@ async function generateContentWithRetry(aiClient: GoogleGenAI, params: any, maxR
           if (audioB64) {
             return response;
           } else {
-            console.warn(`Model ${modelName} returned no inline audio data. Trying fallback model...`);
-            break;
+            console.warn(`Model ${modelName} returned no inline audio data. Retrying...`);
+            attempt++;
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
           }
         }
         return response;
       } catch (error: any) {
         lastError = error;
         const errMsg = error?.message || String(error);
-        const isQuotaError =
-          errMsg.includes('429') ||
-          errMsg.includes('RESOURCE_EXHAUSTED') ||
-          errMsg.includes('Quota exceeded') ||
-          errMsg.includes('rate limit');
 
-        if (isQuotaError) {
-          attempt++;
-          if (attempt < maxRetries) {
-            console.warn(`Gemini API 429 on ${modelName}, retry ${attempt}/${maxRetries} in 1.5s...`);
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-          } else {
-            console.warn(`Gemini API model ${modelName} quota exhausted. Trying next fallback model...`);
-            break;
-          }
+        // Immediate break on non-retryable errors (404 NOT_FOUND or 400 Invalid Modality)
+        if (errMsg.includes('404') || errMsg.includes('NOT_FOUND') || errMsg.includes('modality is not enabled')) {
+          console.warn(`Model ${modelName} not supported for this payload (${errMsg.substring(0, 100)}). Immediate fallback to next model...`);
+          break;
+        }
+
+        const isRetryable =
+          errMsg.includes('429') ||
+          errMsg.includes('503') ||
+          errMsg.includes('RESOURCE_EXHAUSTED') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('high demand') ||
+          errMsg.includes('Quota exceeded') ||
+          errMsg.includes('rate limit') ||
+          errMsg.includes('overloaded');
+
+        attempt++;
+        if (isRetryable && attempt < maxRetries) {
+          const delayMs = attempt * 1200;
+          console.warn(`Gemini API transient error (${errMsg.substring(0, 100)}) on model ${modelName}, retry ${attempt}/${maxRetries} in ${delayMs}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
         } else {
-          console.warn(`Error on model ${modelName}: ${errMsg}. Trying fallback...`);
+          console.warn(`Gemini API model ${modelName} error: ${errMsg.substring(0, 100)}. Trying fallback...`);
           break;
         }
       }
@@ -471,12 +503,41 @@ app.post('/api/tts', async (req, res) => {
     // Custom Voice Clone Directive
     let cloneDirective = '';
     if (customVoiceClone && customVoiceClone.acousticPrompt) {
-      cloneDirective = `CUSTOM CLONED VOICE SIGNATURE: Replicate the timbre, accent, vocal weight, and cadence described here: "${customVoiceClone.acousticPrompt}".`;
+      const gTag = customVoiceClone.gender ? customVoiceClone.gender.toUpperCase() : 'MALE';
+      const cName = customVoiceClone.name || 'Custom Voice';
+      cloneDirective = `CRITICAL CUSTOM VOICE CLONE REPLICATION DIRECTIVE:
+Speaker Profile: ${cName} (${gTag})
+Acoustic Signature: "${customVoiceClone.acousticPrompt}"
+Accent / Style: ${customVoiceClone.accent || 'Natural'}
+Vocal Gender Register: Maintain a realistic, natural ${gTag} pitch, timbre, and vocal resonance throughout.
+MANDATE: Perform the script using this exact custom speaker persona. Replicate their voice signature, vocal weight, and natural speech rhythm. Do NOT fall back to standard synthetic voice.`;
+    } else if (voiceName === 'Aarav' || voiceName?.includes('Aarav') || voiceName?.includes('7b9m') || voiceName?.includes('ElevenLabs')) {
+      cloneDirective = `CUSTOM CLONED VOICE SIGNATURE: Replicate ElevenLabs voice profile 7b9mYhmn: Warm, deeply expressive Indian male voice with natural pitch inflections, smooth cadence, rich vocal weight, clear articulation, and engaging storytelling warmth.`;
     }
 
     const pauseInstruction = 'IMPORTANT VOICE PAUSE DIRECTIVE: When encountering explicit tags like [pause], [pause 0.5s], [pause 1s], [pause 2s], [breath], or [dramatic pause], insert realistic, quiet, natural breathing pauses of that exact duration in the vocal output.';
 
     const VALID_VOICES = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
+
+    const getMappedVoice = (vName: string, cloneObj?: any): string => {
+      if (cloneObj) {
+        if (cloneObj.gender === 'male') {
+          if (cloneObj.baseVoice === 'Puck' || cloneObj.baseVoice === 'Charon' || cloneObj.baseVoice === 'Fenrir') {
+            return cloneObj.baseVoice;
+          }
+          return 'Fenrir';
+        } else if (cloneObj.gender === 'female') {
+          if (cloneObj.baseVoice === 'Zephyr' || cloneObj.baseVoice === 'Kore') {
+            return cloneObj.baseVoice;
+          }
+          return 'Kore';
+        }
+      }
+      if (!vName) return 'Kore';
+      if (vName === 'Aarav' || vName.includes('Aarav') || vName.includes('7b9m')) return 'Fenrir';
+      if (VALID_VOICES.includes(vName)) return vName;
+      return 'Kore';
+    };
 
     if (mode === 'dialogue' && dialogueTurns && dialogueTurns.length > 0 && speakers && speakers.length >= 2) {
       // Multi-speaker dialogue mode
@@ -486,8 +547,8 @@ app.post('/api/tts', async (req, res) => {
       const rawVoice1 = speaker1.customVoiceClone?.baseVoice || speaker1.voiceName;
       const rawVoice2 = speaker2.customVoiceClone?.baseVoice || speaker2.voiceName;
 
-      const voice1 = VALID_VOICES.includes(rawVoice1) ? rawVoice1 : 'Kore';
-      const voice2 = VALID_VOICES.includes(rawVoice2) ? rawVoice2 : 'Puck';
+      const voice1 = getMappedVoice(rawVoice1, speaker1.customVoiceClone);
+      const voice2 = getMappedVoice(rawVoice2, speaker2.customVoiceClone);
 
       const scriptText = dialogueTurns
         .map((turn: { speakerName: string; text: string }) => {
@@ -555,7 +616,7 @@ app.post('/api/tts', async (req, res) => {
       // Single speaker mode - High-capacity chunking (600 words per chunk)
       const textToUse = mainText || text;
       const rawVoice = customVoiceClone?.baseVoice || voiceName;
-      const effectiveVoiceName = VALID_VOICES.includes(rawVoice) ? rawVoice : 'Kore';
+      const effectiveVoiceName = getMappedVoice(rawVoice, customVoiceClone);
       const ruleInstruction = ruleDirective ? ruleDirective + '\n' : '';
       const promptText = `Instructions: ${langDirective} ${toneInstruction}\n${tuningDirective}\n${cloneDirective}\n${pauseInstruction}\n${ruleInstruction}\nText to speak:\n${textToUse}`;
 
@@ -587,8 +648,10 @@ app.post('/api/tts', async (req, res) => {
           await new Promise((resolve) => setTimeout(resolve, 700));
         }
 
+        const contentsPayload = [{ parts: [{ text: chunkPromptText }] }];
+
         const response = await generateContentWithRetry(ai, {
-          contents: [{ parts: [{ text: chunkPromptText }] }],
+          contents: contentsPayload,
           config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: {

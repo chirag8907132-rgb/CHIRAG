@@ -2,6 +2,18 @@ import { VoiceOption, EmotionTone, Language } from '../types';
 
 export const VOICES: VoiceOption[] = [
   {
+    id: 'Aarav',
+    name: 'Aarav (ElevenLabs 7b9mYhmn)',
+    gender: 'male',
+    accent: 'Warm Expressive Indian Accent',
+    description: 'Replicates ElevenLabs 7b9mYhmn voice signature: Warm, expressive Indian male tone for reels, podcasts & narration without any ElevenLabs charges.',
+    previewText: {
+      en: 'Hello! I am Aarav. Enjoy the warmth of the 7b9mYhmn ElevenLabs voice signature with zero subscription charges!',
+      hi: 'नमस्ते! मैं आरव हूँ। इस ElevenLabs स्टाइल आवाज़ का आप बिना किसी शुल्क के उपयोग कर सकते हैं।',
+      hinglish: 'Hey everyone! Main Aarav hoon. ElevenLabs ki 7b9mYhmn voice signature ab VoiceStudio me bilkul FREE available hai.'
+    }
+  },
+  {
     id: 'Kore',
     name: 'Kore',
     gender: 'female',

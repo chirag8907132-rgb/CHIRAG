@@ -1,6 +1,6 @@
 export type Language = 'en' | 'hi' | 'hinglish' | 'auto';
 
-export type VoiceName = 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr';
+export type VoiceName = 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr' | 'Aarav';
 
 export type Gender = 'female' | 'male';
 

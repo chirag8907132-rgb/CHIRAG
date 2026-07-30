@@ -236,6 +236,7 @@ export default function App() {
 
     try {
       const openRouterKeys = [openRouterKey1, openRouterKey2].filter(Boolean);
+      const activeClone = selectedCustomClone || customClones.find((c) => c.id === selectedVoice);
 
       const response = await fetch('/api/tts', {
         method: 'POST',
@@ -243,11 +244,11 @@ export default function App() {
         body: JSON.stringify({
           text,
           language: activeLanguage,
-          voiceName: selectedCustomClone ? selectedCustomClone.baseVoice : selectedVoice,
+          voiceName: activeClone ? activeClone.baseVoice : selectedVoice,
           tone: selectedTone,
           mode: 'single',
           tuningConfig,
-          customVoiceClone: selectedCustomClone,
+          customVoiceClone: activeClone,
           pronunciationRules: pronunciationRules.filter((r) => r.enabled),
           openRouterKeys,
         }),

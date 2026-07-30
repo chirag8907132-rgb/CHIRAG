@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { VOICES } from '../data/voicesAndPresets';
 import { VoiceOption, VoiceName, Language, CustomVoiceClone } from '../types';
 import { User, Volume2, Check, Sparkles, ShieldCheck, Plus, Mic } from 'lucide-react';
@@ -18,11 +18,35 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
   customClones = [],
   onOpenCloningStudio,
 }) => {
-  const [activeVoiceTab, setActiveVoiceTab] = useState<'builtin' | 'custom'>('builtin');
+  const [activeVoiceTab, setActiveVoiceTab] = useState<'builtin' | 'custom'>(() => {
+    if (selectedVoice && (selectedVoice.startsWith('clone_') || customClones.some((c) => c.id === selectedVoice))) {
+      return 'custom';
+    }
+    return 'builtin';
+  });
   const [playingPreview, setPlayingPreview] = useState<string | null>(null);
+  const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
 
-  const handlePreview = (voiceId: string, textToSpeak: string, gender: string, e: React.MouseEvent) => {
+  // Auto-switch tab if selected voice is a custom clone
+  useEffect(() => {
+    if (selectedVoice && (selectedVoice.startsWith('clone_') || customClones.some((c) => c.id === selectedVoice))) {
+      setActiveVoiceTab('custom');
+    }
+  }, [selectedVoice, customClones]);
+
+  const handlePreview = (
+    voiceId: string,
+    textToSpeak: string,
+    gender: string,
+    e: React.MouseEvent,
+    sampleBase64?: string
+  ) => {
     e.stopPropagation();
+
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      audioPreviewRef.current = null;
+    }
 
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -34,6 +58,26 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
     }
 
     setPlayingPreview(voiceId);
+
+    // If custom clone has sample audio base64, play actual sample
+    if (sampleBase64) {
+      try {
+        const audioSrc = sampleBase64.startsWith('data:')
+          ? sampleBase64
+          : `data:audio/webm;base64,${sampleBase64}`;
+        const audio = new Audio(audioSrc);
+        audioPreviewRef.current = audio;
+        audio.play().catch((err) => {
+          console.warn('Playback error:', err);
+          setPlayingPreview(null);
+        });
+        audio.onended = () => setPlayingPreview(null);
+        audio.onerror = () => setPlayingPreview(null);
+        return;
+      } catch {
+        // Fallback to speech synthesis
+      }
+    }
 
     if ('speechSynthesis' in window) {
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
@@ -148,11 +192,17 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
                     </div>
 
                     <div className="flex-1 min-w-0 pr-3">
-                      <div className="flex items-center space-x-1.5">
+                      <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
                         <h3 className="text-sm font-bold text-white truncate">{voice.name}</h3>
-                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/10 text-white/60 capitalize">
-                          {voice.gender}
-                        </span>
+                        {voice.id === 'Aarav' ? (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-extrabold uppercase tracking-wider">
+                            ⚡ ElevenLabs Free
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/10 text-white/60 capitalize">
+                            {voice.gender}
+                          </span>
+                        )}
                       </div>
                       <p className="text-[11px] text-[#ff4e00] font-semibold truncate mt-0.5">
                         {voice.accent}
@@ -261,7 +311,7 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
 
                       <button
                         type="button"
-                        onClick={(e) => handlePreview(clone.id, previewText, clone.gender, e)}
+                        onClick={(e) => handlePreview(clone.id, previewText, clone.gender, e, clone.sampleAudioBase64)}
                         className={`flex items-center text-[10px] font-semibold px-2 py-0.5 rounded-lg transition-colors ${
                           isPlaying
                             ? 'bg-pink-500 text-white animate-pulse'
